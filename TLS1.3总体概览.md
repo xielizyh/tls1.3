@@ -155,6 +155,17 @@ PSK包括：PSK Identity和PSK Key，两者相互对应，前者相当于用户�
 
 ## TLS版本
 
+TLS版本分别用不同的数据表示，目前有
+
+- TLS1.3: 0x0304
+- TLS1.2: 0x0303
+- TLS1.1: 0x0302
+- TLS1.0: 0x0301
+
+## Transcript Hash
+
+表单哈希，计算一系列握手消息（包括握手消息头，但是不包括记录层消息头）的哈希值。
+
 # TLS1.3握手协议
 
 TLS握手协议最为复杂，也最为精密，本节以基于TLS1.3的PSK密钥交换方式进行握手过程详述。
@@ -453,7 +464,7 @@ TLSv1.3 Record Layer: Change Cipher Spec Protocol: Change Cipher Spec
 
 ### EncryptedExtensions
 
-加密扩展，可以包含如supported_groups和server_name等扩展，消息结构如下（摘自[RFC8446](https://datatracker.ietf.org/doc/rfc8446/)第4.1.3节）：
+服务端发送加密扩展，可以包含如supported_groups和server_name等扩展，消息结构如下（摘自[RFC8446](https://datatracker.ietf.org/doc/rfc8446/)第4.1.3节）：
 
 ```c
 struct {
@@ -481,12 +492,267 @@ TLSv1.3 Record Layer: Handshake Protocol: Encrypted Extensions
 - **Version**：版本，必须为0x0303，即TLS1.2
 - **Length**：后续数据长度
 
-接着是握手协议消息：
+接着是消息内容类型：
 
 - **Content Type**：内容类型，22代表握手
 
-接下来是加密扩展：
+接下来是握手协议内容：
 
 - **Handshake Type**：8代表加密扩展
 - **Length**：长度
-- **Extensions Length**：扩展长度，这里加密扩展为空
+- **Extensions Length**：扩展长度，这里加密扩展内容为空
+
+### Finished
+
+服务端发送Finished消息，表示握手过程到处结束，用于对握手过程及计算的密钥提供认证。消息结构如下（摘自[RFC8446](https://datatracker.ietf.org/doc/rfc8446/)第4.4.4节）：
+
+```bash
+struct {
+    opaque verify_data[Hash.length];
+} Finished;
+```
+
+验证的数据verify_data计算如下：
+
+```tex
+verify_data =
+HMAC(finished_key, Transcript-Hash(Handshake Context, Certificate*, CertificateVerify*))
+```
+
+其中Transcript-Hash为表单哈希，计算所有握手消息的哈希值。然后用finished_key对该哈希值作HMAC计算，finished_key定义如下：
+
+```tex
+finished_key = HKDF-Expand-Label(BaseKey, "finished", "", Hash.length)
+```
+
+HKDF-Expand-Lablel是密钥派生函数，关于该函数以及握手阶段密钥如何生成的，后面单独来讲。
+
+wireshark抓包数据如下：
+
+```tex
+TLSv1.3 Record Layer: Handshake Protocol: Finished
+    Opaque Type: Application Data (23)
+    Version: TLS 1.2 (0x0303)
+    Length: 53
+    [Content Type: Handshake (22)]
+    Handshake Protocol: Finished
+        Handshake Type: Finished (20)
+        Length: 32
+        Verify Data
+```
+
+同样首先是记录层头：
+
+- **Opaque Type**：记录层子协议类型，23代表应用数据类型
+- **Version**：版本，必须为0x0303，即TLS1.2
+- **Length**：后续数据长度
+
+接着是握消息内容类型：
+
+- **Content Type**：内容类型，22代表握手
+
+接下来是握手协议内容：
+
+- **Handshake Type**：20代表Finished
+- **Length**：长度
+- **Verify Data**：验证的数据，32字节
+
+### ChangeCipherSpec
+
+客户端发送ChangeCipherSpec消息，该过程与服务端的ChangeCipherSpec过程相同。
+
+### Finished
+
+客户端发送Finished消息，同样该过程与服务端的Finished过程相同。
+
+### NewSessionTicket
+
+服务端发送NewSessionTicket会话票据消息，该消息属于Post-Handshake消息，允许客户端后续可以进行会话恢复，类似于HTTP的Cookie机制，关于会话恢复具体实现后面单独来讲。
+
+会话票据消息的结构如下（摘自[RFC8446](https://datatracker.ietf.org/doc/rfc8446/)第4.6.1节）：
+
+```c
+struct {
+    uint32 ticket_lifetime;
+    uint32 ticket_age_add;
+    opaque ticket_nonce<0..255>;
+    opaque ticket<1..2^16-1>;
+    Extension extensions<0..2^16-2>;
+} NewSessionTicket;
+```
+
+wireshark抓包数据如下：
+
+```tex
+TLSv1.3 Record Layer: Handshake Protocol: New Session Ticket
+    Opaque Type: Application Data (23)
+    Version: TLS 1.2 (0x0303)
+    Length: 234
+    [Content Type: Handshake (22)]
+    Handshake Protocol: New Session Ticket
+        Handshake Type: New Session Ticket (4)
+        Length: 213
+        TLS Session Ticket
+            Session Ticket Lifetime Hint: 304 seconds (5 minutes, 4 seconds)
+            Session Ticket Age Add: 319584202
+            Session Ticket Nonce Length: 8
+            Session Ticket Nonce: 0000000000000000
+            Session Ticket Length: 192
+            Session Ticket: befa11cc57538a7987063a6c0c7ca067d5e49d4a18bf1d1d033a421c26bfac086982b5aa…
+            Extensions Length: 0
+```
+
+同样首先是记录层头：
+
+- **Opaque Type**：记录层子协议类型，23代表应用数据类型
+- **Version**：版本，必须为0x0303，即TLS1.2
+- **Length**：后续数据长度
+
+接着是消息内容类型：
+
+- **Content Type**：内容类型，22代表握手
+
+接下来是握手协议内容：
+
+- **Handshake Type**：4代表会话票据
+- **Length**：长度
+- **TLS Session Ticket**：会话票据内容
+  - **Session Ticket Lifetime Hint**：ticket有效时间，此处为304秒
+  - **Session Ticket Age Add**：随机生成的32位值，用于模糊ticket
+  - **Session Ticket Nonce**：每个nonce值在此连接上发送的所有ticket值都要唯一
+  - **Session Ticket**：ticket值，作为PSK Identity
+  - **extensions**：ticket的扩展，目前唯一的扩展为early_data，表示可用于发送0-RTT数据的最大长度
+
+### Application Data
+
+完成以上握手过程后，服务和客户端已经各自拥有后续通信的所有安全参数。这里服务端发送一帧应用消息，wireshark抓包数据内容如下：
+
+```tex
+TLSv1.3 Record Layer: Application Data Protocol: http-over-tls
+    Opaque Type: Application Data (23)
+    Version: TLS 1.2 (0x0303)
+    Length: 30
+    [Content Type: Application Data (23)]
+    Encrypted Application Data: 662840f60f0647a18b24dc30b9f341b2e478882771c11f2295122fd237c0
+    [Application Data Protocol: http-over-tls]
+```
+
+同样首先是记录层头：
+
+- **Opaque Type**：记录层子协议类型，23代表应用数据类型
+- **Version**：版本，必须为0x0303，即TLS1.2
+- **Length**：后续数据长度
+
+接着是消息内容类型：
+
+- **Content Type**：内容类型，23代表应用数据
+
+接下来是加密的应用数据：
+
+- **Encrypted Application Data**：这里使用主密钥进行加密了的，我们配置的密钥文件，在wireshark底部点击```Decrypted TLS```，可以看到明文数据
+
+  ```c
+  0000   48 65 6c 6c 6f 20 63 6c 69 65 6e 74 0a            Hello client.
+  ```
+
+  表示成字符串形式即为我们发送的“**Hello client**”。
+
+### Application Data
+
+同样，客户端也发送一帧应用消息，wireshark抓包数据内容如下：
+
+```tex
+TLSv1.3 Record Layer: Application Data Protocol: http-over-tls
+    Opaque Type: Application Data (23)
+    Version: TLS 1.2 (0x0303)
+    Length: 30
+    [Content Type: Application Data (23)]
+    Encrypted Application Data: 03f69264d18e76641fdb9da85d9813f4a6aeecb51100c4b4d74fcb0c8634
+    [Application Data Protocol: http-over-tls]
+```
+
+同样首先是记录层头：
+
+- **Opaque Type**：记录层子协议类型，23代表应用数据类型
+- **Version**：版本，必须为0x0303，即TLS1.2
+- **Length**：后续数据长度
+
+接着是消息内容类型：
+
+- **Content Type**：内容类型，23代表应用数据
+
+接下来是加密的应用数据：
+
+- **Encrypted Application Data**：这里使用主密钥进行加密了的，我们配置的密钥文件，在wireshark底部点击```Decrypted TLS```，可以看到明文数据
+
+  ```c
+  0000   48 65 6c 6c 6f 20 73 65 72 76 65 72 0a            Hello server.
+  ```
+
+  表示成字符串形式即为我们发送的“**Hello server**”。
+
+### Alert
+
+我们用s_server和s_client模拟的最后手动杀掉了s_server服务端进程，客户端发现断开后，发送了该警告消息。
+
+wireshark抓包数据如下：
+
+```tex
+TLSv1.3 Record Layer: Alert (Level: Warning, Description: Close Notify)
+    Opaque Type: Application Data (23)
+    Version: TLS 1.2 (0x0303)
+    Length: 19
+    [Content Type: Alert (21)]
+    Alert Message
+        Level: Warning (1)
+        Description: Close Notify (0)
+```
+
+同样首先是记录层头：
+
+- **Opaque Type**：记录层子协议类型，23代表应用数据类型
+- **Version**：版本，必须为0x0303，即TLS1.2
+- **Length**：后续数据长度
+
+接着是警告消息：
+
+- **Level**：等级为警告
+- **Description**：Close Notify，结束通知
+
+# PSK握手消息流
+
+基于PSK方式的握手具体过程如下（摘自[RFC8446](https://datatracker.ietf.org/doc/rfc8446/)第2.2节）：
+
+![psk握手](images/会话恢复和PSK消息流.bmp)
+
+到目前我们只进行了Initial Handshake首次握手测试，图中Subsequent Handshake就是后面要讲的会话恢复功能。
+
+# 状态机
+
+服务端和客户端握手过程状态机如下（摘自[RFC8446](https://datatracker.ietf.org/doc/rfc8446/)第A.1和A.2节），由于目前没用证书方式，我们只需关注PSK方式的状态机。
+
+## 客户端
+
+1. 客户端处于**START**初始状态
+2. 客户端发送**ClientHello**消息
+3. 客户端进入等待**WAIT_SH**，等待服务端发送**ServerHello**消息
+4. 客户端收到**ServerHello**消息后，进入等待**WAIT_EE**，等待服务端发送**EncryptedExtensions**消息
+5. 由于使用PSK，客户端进入等待**WAIT_FINISHED**，等待服务端发送**Finished**消息
+6. 客户端收到服务端**Finished**消息后，发送客户端的**Finished**消息
+7. 至此，客户端与服务端握手成功，可以安全的发送应用数据了
+
+![客户端状态机](images/客户端状态机.bmp)
+
+## 服务端
+
+1. 服务端处于**START**初始状态
+2. 服务端收到客户端发送的**ClientHello**消息，选择适当的参数
+3. 服务端发送**Severhello**，**EncryptedExtensions**，**Finished**等消息
+4. 由于目前没有发送0-RTT数据，也没有对客户端进行认证，服务端直接进入**WAIT_FINISHED**
+5. 服务端收到客户端**Finished**消息后，握手完成
+6. 至此，客户端与服务端握手成功，可以安全的发送应用数据了
+
+![服务端状态机](images/服务端状态机.bmp)
+
+
+
